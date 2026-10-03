@@ -29,6 +29,9 @@ final class AgentUsageService: ObservableObject {
     /// The history the island can show: thirteen weeks for the activity map.
     static let horizon = TimeInterval(AgentUsageSnapshot.dayCount) * 86_400
     private static let tick: TimeInterval = 30
+    /// Kiro's account command is slower than a local log read and changes
+    /// credits much less often, so refresh it separately.
+    private static let kiroRefresh: TimeInterval = 15 * 60
     /// File events report a written file only once it closes, and some
     /// agents keep their log open for the whole session: logs written in the
     /// last half hour, or holding a turn, are checked this often instead.
@@ -81,6 +84,9 @@ final class AgentUsageService: ObservableObject {
     /// The last snapshot handed over, to tell when time alone changes it.
     private var published = AgentUsageSnapshot()
     private var claudePlan: AgentPlan?
+    private var kiroPlan: AgentPlan?
+    private var kiroUsageInFlight = false
+    private var kiroUsageAttempted = Date.distantPast
     /// The organization Claude Code signs in to, when its profile says.
     private var claudeOrganization: String?
     private var claudeProfileModified: Date?
@@ -184,6 +190,9 @@ final class AgentUsageService: ObservableObject {
             warned.removeAll()
             budgetDay = nil
             claudePlan = nil
+            kiroPlan = nil
+            kiroUsageInFlight = false
+            kiroUsageAttempted = .distantPast
             claudeOrganization = nil
             claudeProfileModified = nil
             claudeAppModified = nil
@@ -211,6 +220,7 @@ final class AgentUsageService: ObservableObject {
         queue.async { [self] in
             guard readerSession >= 0 else { return }
             readClaudeApp(now: Date())
+            readKiroUsageIfDue(now: Date())
             checkLimits()
             publish()
         }
@@ -231,6 +241,9 @@ final class AgentUsageService: ObservableObject {
             readerSession = session
             readerCancellation = cancellation
             enabled = providers
+            kiroPlan = nil
+            kiroUsageInFlight = false
+            kiroUsageAttempted = .distantPast
             store = AgentUsageStore()
             cursors.removeAll()
             // Prices first, so the first read is already priced.
@@ -274,6 +287,7 @@ final class AgentUsageService: ObservableObject {
             watch(roots)
             startPolling()
             publish()
+            readKiroUsageIfDue(now: Date())
             saveProgress()
         }
     }
@@ -473,6 +487,7 @@ final class AgentUsageService: ObservableObject {
         queue.async { [self] in
             guard readerSession >= 0 else { return }
             let now = Date()
+            readKiroUsageIfDue(now: now)
             let before = inputs
             store.closeIdleTurns(now: now, after: NotchAgentSupport.idleTurn)
             store.dropRecords(before: now.addingTimeInterval(-Self.horizon))
@@ -515,6 +530,7 @@ final class AgentUsageService: ObservableObject {
         let limits: [AgentProvider: AgentLimits]
         let codexPlan: String?
         let claudePlan: AgentPlan?
+        let kiroPlan: AgentPlan?
         let claudeOrganization: String?
         let claudeApp: [AgentClaudeAppUsage.Sample]
     }
@@ -523,7 +539,8 @@ final class AgentUsageService: ObservableObject {
     private var inputs: Inputs {
         Inputs(records: store.records.count, turns: store.turns, discoveredProviders: discoveredProviders,
                limits: store.limits, codexPlan: store.codexPlan,
-               claudePlan: claudePlan, claudeOrganization: claudeOrganization, claudeApp: claudeAppSamples)
+               claudePlan: claudePlan, kiroPlan: kiroPlan,
+               claudeOrganization: claudeOrganization, claudeApp: claudeAppSamples)
     }
 
     /// Runs on `queue` and hands the finished snapshot to the main thread.
@@ -532,6 +549,7 @@ final class AgentUsageService: ObservableObject {
         guard session >= 0 else { return }
         var plans: [AgentProvider: AgentPlan] = [:]
         if let claudePlan { plans[.claude] = claudePlan }
+        if let kiroPlan { plans[.kiro] = kiroPlan }
         if let codex = AgentPlans.codex(planType: store.codexPlan) { plans[.codex] = codex }
         var next = store.snapshot(plans: plans, providers: enabled, now: Date())
         next.seen.formUnion(discoveredProviders)
@@ -547,6 +565,30 @@ final class AgentUsageService: ObservableObject {
             if self.claudeAppChecked != checked { self.claudeAppChecked = checked }
             if self.pricesUpdated != prices { self.pricesUpdated = prices }
             if self.snapshot != next { self.snapshot = next }
+        }
+    }
+
+    /// Runs on `queue`; account I/O runs off the reader queue so local log
+    /// updates and the island remain responsive while Kiro starts.
+    private func readKiroUsageIfDue(now: Date) {
+        guard enabled.contains(.kiro), !kiroUsageInFlight,
+              now.timeIntervalSince(kiroUsageAttempted) >= Self.kiroRefresh else { return }
+        kiroUsageAttempted = now
+        kiroUsageInFlight = true
+        let session = readerSession
+        let home = home
+        let environment = ProcessInfo.processInfo.environment
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reading = AgentKiroUsage.fetch(home: home, environment: environment)
+            self?.queue.async { [weak self] in
+                guard let self, self.readerSession == session, self.enabled.contains(.kiro) else { return }
+                self.kiroUsageInFlight = false
+                guard let reading else { return }
+                self.store.updateLimits(reading.limits)
+                self.kiroPlan = reading.plan
+                self.checkLimits()
+                self.schedulePublish()
+            }
         }
     }
 

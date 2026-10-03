@@ -353,6 +353,17 @@ enum AgentMarks {
     }
 
     private static func lookUp(_ provider: AgentProvider) -> Mark? {
+        let bundledName: String?
+        switch provider {
+        case .kiro: bundledName = "kiro-logo"
+        case .pi: bundledName = "pi-agent-logo"
+        default: bundledName = nil
+        }
+        if let bundledName,
+           let url = Bundle.main.url(forResource: bundledName, withExtension: "png", subdirectory: "Images"),
+           let image = NSImage(contentsOf: url) {
+            return .icon(image)
+        }
         for identifier in provider.appIdentifiers {
             guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else { continue }
             if let bundle = Bundle(url: url) {

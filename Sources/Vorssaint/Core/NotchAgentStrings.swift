@@ -179,7 +179,7 @@ extension NotchAgentStrings {
     static let enUS = NotchAgentStrings(
         title: "AI Agents",
         hubDescription: "Follow agent activity, usage and live work from Claude, Codex, OpenCode, Grok Build, Kiro CLI and Pi in the Dynamic Island.",
-        settingsDescription: "Reads local session activity and usage from Claude Code, Codex, OpenCode, Grok Build, Kiro CLI and Pi. Kiro reports activity and context credits, but not token or dollar totals. Prompts, replies and tool output are never kept.",
+        settingsDescription: "Reads local session activity and usage from Claude Code, Codex, OpenCode, Grok Build, Kiro CLI and Pi. Kiro account credits are checked through its CLI; prompts, replies and tool output are never kept.",
         restingTitle: "AI limits",
         limitsCard: "Limits",
         spendCard: "Spending",
