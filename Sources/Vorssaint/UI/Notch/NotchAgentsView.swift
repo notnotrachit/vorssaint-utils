@@ -284,6 +284,12 @@ private struct NotchAgentLimitsCard: View {
         } else if provider == .claude {
             Text(text.noSession).font(.system(size: 10.5)).foregroundStyle(.secondary)
             setUpLimits
+        } else if provider == .kiro {
+            Text(text.kiroLimitsHint).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+            lastUsed
+        } else if provider == .pi {
+            Text(text.piLimitsUnsupported).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+            lastUsed
         } else if provider == .opencode {
             let todayUsage = snapshot.usage(.today).byProvider[.opencode]
             if let todayUsage, todayUsage.tokens.total > 0 || todayUsage.requests > 0 || todayUsage.cost > 0 {
