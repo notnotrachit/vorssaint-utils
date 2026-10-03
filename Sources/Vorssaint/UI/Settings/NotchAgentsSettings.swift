@@ -11,6 +11,9 @@ struct NotchAgentsSettingsControls: View {
     @AppStorage(DefaultsKey.notchAgentsClaude) private var claude = true
     @AppStorage(DefaultsKey.notchAgentsCodex) private var codex = true
     @AppStorage(DefaultsKey.notchAgentsOpenCode) private var opencode = true
+    @AppStorage(DefaultsKey.notchAgentsGrok) private var grok = true
+    @AppStorage(DefaultsKey.notchAgentsKiro) private var kiro = true
+    @AppStorage(DefaultsKey.notchAgentsPi) private var pi = true
     @AppStorage(DefaultsKey.notchAgentsCardOrder) private var cardOrder = ""
     @AppStorage(DefaultsKey.notchAgentsHiddenCards) private var hiddenCards = ""
     @AppStorage(DefaultsKey.notchAgentsLimitDisplay) private var limitDisplay = NotchAgentLimitDisplay.remaining.rawValue
@@ -31,6 +34,14 @@ struct NotchAgentsSettingsControls: View {
 
     private var text: NotchAgentStrings { FeatureStrings.notchAgents(l10n.language) }
     private var locale: Locale { l10n.language.formattingLocale() }
+    private var sampleProvider: AgentProvider {
+        if claude { return .claude }
+        if codex { return .codex }
+        if opencode { return .opencode }
+        if grok { return .grok }
+        if kiro { return .kiro }
+        return .pi
+    }
 
     private var orderedCards: [NotchAgentCard] {
         let stored = cardOrder.split(separator: ",").compactMap { NotchAgentCard(rawValue: String($0)) }
@@ -47,6 +58,9 @@ struct NotchAgentsSettingsControls: View {
             providerRow(.claude, isOn: $claude)
             providerRow(.codex, isOn: $codex)
             providerRow(.opencode, isOn: $opencode)
+            providerRow(.grok, isOn: $grok)
+            providerRow(.kiro, isOn: $kiro)
+            providerRow(.pi, isOn: $pi)
 
             Divider()
             Text(text.cardsTitle).font(.subheadline.weight(.medium))
@@ -95,7 +109,7 @@ struct NotchAgentsSettingsControls: View {
                 NotchAgentStripSample(readout: NotchAgentReadout(rawValue: readout) ?? .elapsed,
                                       display: NotchAgentLimitDisplay(rawValue: limitDisplay) ?? .remaining,
                                       focus: NotchAgentLimitFocus(rawValue: limitFocus) ?? .mostUsed,
-                                      provider: claude ? .claude : (codex ? .codex : .opencode))
+                                      provider: sampleProvider)
                     .padding(.leading, settingsRowTextInset)
             }
 
@@ -223,7 +237,7 @@ struct NotchAgentsSettingsControls: View {
             Spacer(minLength: 12)
             // One agent stays on; turning the section off stops all.
             Toggle(provider.displayName, isOn: isOn).labelsHidden().toggleStyle(.switch)
-                .disabled(isOn.wrappedValue && [claude, codex, opencode].filter { $0 }.count <= 1)
+                .disabled(isOn.wrappedValue && [claude, codex, opencode, grok, kiro, pi].filter { $0 }.count <= 1)
         }
     }
 
@@ -304,4 +318,3 @@ private struct NotchAgentStripSample: View {
         return NotchAgentSupport.stripReading(snapshot, readout: readout, display: display, focus: focus, now: now)
     }
 }
-

@@ -42,6 +42,18 @@ final class AgentUsageStore {
 
     var live: [AgentLiveSession] { Array(turns.values) }
 
+    /// The old Kiro format has no explicit end marker for archived turns.
+    /// Do not restore its saved live rows across launches; appended events
+    /// will reopen a row if that session is still doing work.
+    @discardableResult
+    func clearLive(provider: AgentProvider) -> Bool {
+        let active = turns.values.contains { $0.provider == provider }
+            || waiting.values.contains { $0.provider == provider }
+        turns = turns.filter { $0.value.provider != provider }
+        waiting = waiting.filter { $0.value.provider != provider }
+        return active
+    }
+
     func snapshot(plans: [AgentProvider: AgentPlan], providers: Set<AgentProvider>, now: Date,
                   calendar: Calendar = .current) -> AgentUsageSnapshot {
         summary.snapshot(records: records, limits: limits, live: live, plans: plans,
@@ -142,7 +154,7 @@ final class AgentUsageStore {
             let old = records[position]
             let merged = old.tokens.merged(with: record.tokens)
             if merged == old.tokens {
-                if record.provider == .opencode {
+                if record.provider == .opencode || record.reportedCost || old.reportedCost {
                     let newCost: Double?
                     let isReported: Bool
                     if record.reportedCost {
@@ -180,19 +192,16 @@ final class AgentUsageStore {
             let priced = AgentPricing.cost(combined, model: old.model)
             let newCost: Double?
             let isReported: Bool
-            if record.provider == .opencode {
+            if record.reportedCost || old.reportedCost {
                 if record.reportedCost {
                     newCost = record.cost
                     isReported = true
-                } else if old.reportedCost {
+                } else {
                     newCost = old.cost
                     isReported = true
-                } else {
-                    newCost = priced.cost ?? record.cost ?? old.cost
-                    isReported = false
                 }
             } else {
-                newCost = priced.cost
+                newCost = priced.cost ?? (record.provider == .opencode ? record.cost : nil)
                 isReported = false
             }
             delta = AgentTokens(input: merged.input - old.tokens.input,
@@ -413,12 +422,34 @@ struct AgentLogRoot: Equatable {
 
     /// Canonical, because file events report real paths: a folder kept as a
     /// link elsewhere, as dotfile setups do, would otherwise never match.
-    static func all(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [AgentLogRoot] {
-        [(AgentProvider.claude, ".claude/projects"), (.claude, ".config/claude/projects"),
-         (.codex, ".codex/sessions"), (.codex, ".codex/archived_sessions"),
-         (.opencode, ".local/share/opencode")].map { provider, path in
-            AgentLogRoot(provider: provider, url: canonical(home.appending(path: path, directoryHint: .isDirectory)))
+    static func all(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                    environment suppliedEnvironment: [String: String]? = nil) -> [AgentLogRoot] {
+        let environment = suppliedEnvironment ?? (home.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+                                                  ? ProcessInfo.processInfo.environment : [:])
+        func configuredHome(_ key: String, fallback: URL) -> URL {
+            guard let raw = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                return fallback
+            }
+            let expanded = (raw as NSString).expandingTildeInPath
+            if expanded.hasPrefix("/") { return URL(fileURLWithPath: expanded, isDirectory: true) }
+            return URL(fileURLWithPath: expanded, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+                .standardizedFileURL
         }
+        let grokHome = configuredHome("GROK_HOME", fallback: home.appending(path: ".grok", directoryHint: .isDirectory))
+        let kiroHome = configuredHome("KIRO_HOME", fallback: home.appending(path: ".kiro", directoryHint: .isDirectory))
+        let piSessions = configuredHome("PI_CODING_AGENT_SESSION_DIR",
+                                        fallback: home.appending(path: ".pi/agent/sessions", directoryHint: .isDirectory))
+        let roots: [(AgentProvider, URL)] = [
+            (.claude, home.appending(path: ".claude/projects", directoryHint: .isDirectory)),
+            (.claude, home.appending(path: ".config/claude/projects", directoryHint: .isDirectory)),
+            (.codex, home.appending(path: ".codex/sessions", directoryHint: .isDirectory)),
+            (.codex, home.appending(path: ".codex/archived_sessions", directoryHint: .isDirectory)),
+            (.opencode, home.appending(path: ".local/share/opencode", directoryHint: .isDirectory)),
+            (.grok, grokHome.appending(path: "sessions", directoryHint: .isDirectory)),
+            (.kiro, kiroHome.appending(path: "sessions", directoryHint: .isDirectory)),
+            (.pi, piSessions),
+        ]
+        return roots.map { AgentLogRoot(provider: $0.0, url: canonical($0.1)) }
     }
 
     /// The path the file system reports for `url`; the path as given while
@@ -605,6 +636,22 @@ enum AgentLogReader {
         return path.hasSuffix(".jsonl")
     }
 
+    static func isSupportedLog(_ path: String, provider: AgentProvider) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        switch provider {
+        case .grok:
+            return url.lastPathComponent == "updates.jsonl"
+        case .kiro:
+            let parent = url.deletingLastPathComponent().lastPathComponent
+            if url.lastPathComponent == "messages.jsonl" && parent.hasPrefix("sess_") { return true }
+            return parent == "cli" && path.hasSuffix(".jsonl")
+        case .pi:
+            return path.hasSuffix(".jsonl")
+        case .claude, .codex, .opencode:
+            return isLog(path)
+        }
+    }
+
     /// A hash of the log's first and last few kilobytes before `offset`, and
     /// of the offset itself. A log rewritten with a different start, or
     /// different lines just before where reading stopped, no longer matches.
@@ -652,7 +699,7 @@ enum AgentLogReader {
             }
             guard let enumerator = FileManager.default.enumerator(at: root.url, includingPropertiesForKeys: keys,
                                                                   options: [.skipsPackageDescendants]) else { continue }
-            for case let url as URL in enumerator where url.path.hasSuffix(".jsonl") {
+            for case let url as URL in enumerator where isSupportedLog(url.path, provider: root.provider) {
                 guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
                       let modified = values.contentModificationDate, modified >= horizon else { continue }
                 let subagent = root.provider == .claude && AgentLogCursor.parent(of: url.path) != nil

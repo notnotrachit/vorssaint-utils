@@ -4,8 +4,8 @@
 import Combine
 import Foundation
 
-/// Reads Claude Code and Codex usage from their local session logs, and
-/// OpenCode usage from its database, while the AI section is on, along with
+/// Reads local usage and activity from Claude Code, Codex, OpenCode, Grok Build,
+/// Kiro CLI and Pi sessions while the AI section is on, along with
 /// the plan limits the Claude app saves. The files are read where they are,
 /// incrementally, and nothing is copied or sent: only counters are kept, in
 /// memory and in the app's private folder so the next launch reads only what
@@ -69,6 +69,9 @@ final class AgentUsageService: ObservableObject {
     private var readerSession = -1
     private var readerCancellation: Cancellation?
     private var enabled: Set<AgentProvider> = []
+    /// Session logs also make a provider available in the AI page when their
+    /// format reports activity but not token or dollar totals (Kiro).
+    private var discoveredProviders: Set<AgentProvider> = []
     private var store = AgentUsageStore()
     private var cursors: [String: AgentLogCursor] = [:]
     private var watcher: AgentLogWatcher?
@@ -100,10 +103,13 @@ final class AgentUsageService: ObservableObject {
     func syncWithPreferences() {
         guard NotchAgentSupport.isEnabled() else { stop(); return }
         let wanted = NotchAgentSupport.providers()
-        // An agent turned off is no longer read at all, and one turned on is
-        // read from its start: both take a fresh reading, which would not
-        // resume progress saved for the old set, so it goes at once.
-        if running, wanted != providers { stop(keepingProgress: false) }
+            // An agent turned off is no longer read at all. Newly added
+            // providers can join a saved reading without rereading the logs
+            // of providers that were already on.
+        if running, wanted != providers {
+            let old = Set(providers)
+            stop(keepingProgress: old.isSubset(of: Set(wanted)))
+        }
         if !running {
             running = true
             session += 1
@@ -170,6 +176,7 @@ final class AgentUsageService: ObservableObject {
             watcher?.stop()
             watcher = nil
             watchedRoots = []
+            discoveredProviders.removeAll()
             store = AgentUsageStore()
             cursors.removeAll()
             published = AgentUsageSnapshot()
@@ -231,12 +238,17 @@ final class AgentUsageService: ObservableObject {
             let horizon = Date().addingTimeInterval(-Self.horizon)
             let roots = AgentLogRoot.all(home: home).filter { providers.contains($0.provider) }
             let files = AgentLogReader.discover(roots, since: horizon)
+            discoveredProviders = Set(files.map(\.provider))
             // Resumes where the last launch stopped, among the logs there now.
-            if let saved = AgentUsageArchive.load(), saved.providers == providers {
+            if let saved = AgentUsageArchive.load(), saved.providers.isSubset(of: providers) {
                 let resumed = AgentUsageArchive.resume(saved, logs: Set(files.map(\.path)), since: horizon)
                 (store, cursors) = (resumed.store, resumed.cursors)
+                // Older Kiro transcript rows did not close completed turns.
+                // Drop cached Kiro live state once on launch; fresh appended
+                // events will restore it for sessions that are still active.
+                let clearedLegacyKiroTurns = store.clearLive(provider: .kiro)
                 // What the resume took back leaves the disk at the next save.
-                if resumed.unchanged { savedMark = progressMark }
+                if resumed.unchanged && !clearedLegacyKiroTurns { savedMark = progressMark }
             }
             for file in files {
                 // A stop while reading leaves the rest for the next start.
@@ -379,6 +391,7 @@ final class AgentUsageService: ObservableObject {
         let now = Date()
         AgentLogReader.readAppended(cursor, since: now.addingTimeInterval(-Self.horizon),
                                     shouldContinue: { !cancellation.isCancelled }) { line in
+            AgentLogParser.seed(path: path, provider: provider, state: &cursor.state)
             // Apply in log order while the chunk is alive instead of retaining
             // every parsed entry until a potentially multi-gigabyte file ends.
             let entries: [AgentLogEntry]
@@ -386,6 +399,9 @@ final class AgentUsageService: ObservableObject {
             case .claude: entries = AgentLogParser.parseClaude(line, state: &cursor.state, now: now)
             case .codex: entries = AgentLogParser.parseCodex(line, state: &cursor.state, now: now)
             case .opencode: entries = AgentLogParser.parseOpenCode(line, state: &cursor.state, now: now)
+            case .grok: entries = AgentLogParser.parseGrok(line, state: &cursor.state, now: now)
+            case .kiro: entries = AgentLogParser.parseKiro(line, state: &cursor.state, now: now)
+            case .pi: entries = AgentLogParser.parsePi(line, state: &cursor.state, now: now)
             }
             guard !entries.isEmpty else { return }
             changed = true
@@ -416,15 +432,21 @@ final class AgentUsageService: ObservableObject {
         guard readerSession >= 0, !watchedRoots.isEmpty else { return }
         var changed = false
         if rescan {
-            for file in AgentLogReader.discover(watchedRoots, since: Date().addingTimeInterval(-Self.horizon)) {
+            let files = AgentLogReader.discover(watchedRoots, since: Date().addingTimeInterval(-Self.horizon))
+            let before = discoveredProviders
+            discoveredProviders.formUnion(files.map(\.provider))
+            changed = discoveredProviders != before
+            for file in files {
                 if read(file.path, provider: file.provider) { changed = true }
             }
         } else {
             for path in Set(paths) where AgentLogReader.isLog(path) {
                 let actualPath = path.hasSuffix("-wal") ? String(path.dropLast(4)) : path
                 guard let root = watchedRoots.first(where: { actualPath.hasPrefix($0.url.path + "/") }),
+                      AgentLogReader.isSupportedLog(actualPath, provider: root.provider),
                       root.provider != .opencode
                         || actualPath == root.url.appending(path: AgentOpenCodeReader.database).path else { continue }
+                if discoveredProviders.insert(root.provider).inserted { changed = true }
                 if read(actualPath, provider: root.provider) { changed = true }
             }
         }
@@ -462,7 +484,11 @@ final class AgentUsageService: ObservableObject {
             if now.timeIntervalSince(lastRootCheck) > 300 {
                 let roots = AgentLogRoot.all(home: home).filter { enabled.contains($0.provider) }
                 if roots.filter(\.exists) != watchedRoots {
-                    for file in AgentLogReader.discover(roots, since: now.addingTimeInterval(-Self.horizon)) {
+                    let files = AgentLogReader.discover(roots, since: now.addingTimeInterval(-Self.horizon))
+                    let beforeFound = discoveredProviders
+                    discoveredProviders.formUnion(files.map(\.provider))
+                    changed = changed || discoveredProviders != beforeFound
+                    for file in files {
                         if read(file.path, provider: file.provider) { changed = true }
                     }
                     watch(roots)
@@ -485,6 +511,7 @@ final class AgentUsageService: ObservableObject {
     private struct Inputs: Equatable {
         let records: Int
         let turns: [String: AgentLiveSession]
+        let discoveredProviders: Set<AgentProvider>
         let limits: [AgentProvider: AgentLimits]
         let codexPlan: String?
         let claudePlan: AgentPlan?
@@ -494,7 +521,8 @@ final class AgentUsageService: ObservableObject {
 
     /// Runs on `queue`.
     private var inputs: Inputs {
-        Inputs(records: store.records.count, turns: store.turns, limits: store.limits, codexPlan: store.codexPlan,
+        Inputs(records: store.records.count, turns: store.turns, discoveredProviders: discoveredProviders,
+               limits: store.limits, codexPlan: store.codexPlan,
                claudePlan: claudePlan, claudeOrganization: claudeOrganization, claudeApp: claudeAppSamples)
     }
 
@@ -505,7 +533,8 @@ final class AgentUsageService: ObservableObject {
         var plans: [AgentProvider: AgentPlan] = [:]
         if let claudePlan { plans[.claude] = claudePlan }
         if let codex = AgentPlans.codex(planType: store.codexPlan) { plans[.codex] = codex }
-        let next = store.snapshot(plans: plans, providers: enabled, now: Date())
+        var next = store.snapshot(plans: plans, providers: enabled, now: Date())
+        next.seen.formUnion(discoveredProviders)
         published = next
         checkBudget(next)
         let checked = enabled.contains(.claude) ? claudeAppSamples.last(where: {

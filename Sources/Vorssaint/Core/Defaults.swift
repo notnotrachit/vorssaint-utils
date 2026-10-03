@@ -828,6 +828,9 @@ enum DefaultsKey {
     static let notchAgentsClaude = "notchAgentsClaude"
     static let notchAgentsCodex = "notchAgentsCodex"
     static let notchAgentsOpenCode = "notchAgentsOpenCode"
+    static let notchAgentsGrok = "notchAgentsGrok"
+    static let notchAgentsKiro = "notchAgentsKiro"
+    static let notchAgentsPi = "notchAgentsPi"
     static let notchAgentsCardOrder = "notchAgentsCardOrder"
     static let notchAgentsHiddenCards = "notchAgentsHiddenCards"
     static let notchAgentsPeriod = "notchAgentsPeriod"
@@ -1378,6 +1381,9 @@ enum Defaults {
         DefaultsKey.notchAgentsClaude: true,
         DefaultsKey.notchAgentsCodex: true,
         DefaultsKey.notchAgentsOpenCode: true,
+        DefaultsKey.notchAgentsGrok: true,
+        DefaultsKey.notchAgentsKiro: true,
+        DefaultsKey.notchAgentsPi: true,
         DefaultsKey.notchAgentsCardOrder: "",
         DefaultsKey.notchAgentsHiddenCards: "",
         DefaultsKey.notchAgentsPeriod: AgentPeriod.today.rawValue,

@@ -82,6 +82,9 @@ enum NotchAgentSupport {
         case .claude: return DefaultsKey.notchAgentsClaude
         case .codex: return DefaultsKey.notchAgentsCodex
         case .opencode: return DefaultsKey.notchAgentsOpenCode
+        case .grok: return DefaultsKey.notchAgentsGrok
+        case .kiro: return DefaultsKey.notchAgentsKiro
+        case .pi: return DefaultsKey.notchAgentsPi
         }
     }
 
@@ -261,13 +264,20 @@ enum NotchAgentSupport {
         return rows
     }
 
-    static func height(of row: [NotchAgentTile]) -> CGFloat {
-        row.contains { $0.card.fullWidth } ? chartHeight : cardHeight
+    static func height(of row: [NotchAgentTile], liveRows: Int = 0) -> CGFloat {
+        if row.contains(where: { $0.card.fullWidth }) { return chartHeight }
+        if row.contains(where: { $0.card == .live }) {
+            // The idle card lists every provider. Give those rows room instead
+            // of letting them spill over the cards below it.
+            return max(cardHeight, cardHeight + CGFloat(max(0, liveRows - 3)) * 18)
+        }
+        return cardHeight
     }
 
-    static func contentHeight(_ rows: [[NotchAgentTile]]) -> CGFloat {
+    static func contentHeight(_ rows: [[NotchAgentTile]], liveRows: Int = 0) -> CGFloat {
         guard !rows.isEmpty else { return 0 }
-        return rows.map(height).reduce(0, +) + spacing * CGFloat(rows.count - 1)
+        return rows.map { height(of: $0, liveRows: liveRows) }.reduce(0, +)
+            + spacing * CGFloat(rows.count - 1)
     }
 }
 

@@ -176,8 +176,8 @@ extension FeatureStrings {
 extension NotchAgentStrings {
     static let enUS = NotchAgentStrings(
         title: "AI Agents",
-        hubDescription: "Follow plan limits, tokens, API value and the work in progress of Claude, Codex and OpenCode in the Dynamic Island.",
-        settingsDescription: "Reads the usage Claude Code, Codex and OpenCode record on this Mac and the plan limits the Claude app saves. Prompts, replies and files are never kept, and your usage never leaves your Mac.",
+        hubDescription: "Follow agent activity, usage and live work from Claude, Codex, OpenCode, Grok Build, Kiro CLI and Pi in the Dynamic Island.",
+        settingsDescription: "Reads local session activity and usage from Claude Code, Codex, OpenCode, Grok Build, Kiro CLI and Pi. Kiro reports activity and context credits, but not token or dollar totals. Prompts, replies and tool output are never kept.",
         restingTitle: "AI limits",
         limitsCard: "Limits",
         spendCard: "Spending",
@@ -203,7 +203,7 @@ extension NotchAgentStrings {
         planMultipleFormat: "%1$@ the price of %2$@",
         idle: "Idle",
         noActivity: "Nothing in this period",
-        empty: "No usage from Claude Code, Codex or OpenCode yet. It appears here as soon as any of them works on this Mac.",
+        empty: "No agent activity yet. It appears here as soon as a supported coding agent works on this Mac.",
         loading: "Reading usage…",
         noCards: "Choose what this page shows in Dynamic Island settings.",
         unpriced: "Some models have no known price, so this is a minimum.",

@@ -15,14 +15,25 @@ struct NotchAgentsView: View {
     @AppStorage(DefaultsKey.notchAgentsClaude) private var claude = true
     @AppStorage(DefaultsKey.notchAgentsCodex) private var codex = true
     @AppStorage(DefaultsKey.notchAgentsOpenCode) private var opencode = true
+    @AppStorage(DefaultsKey.notchAgentsGrok) private var grok = true
+    @AppStorage(DefaultsKey.notchAgentsKiro) private var kiro = true
+    @AppStorage(DefaultsKey.notchAgentsPi) private var pi = true
 
     private var text: NotchAgentStrings { FeatureStrings.notchAgents(l10n.language) }
     private var chosenPeriod: AgentPeriod { AgentPeriod(rawValue: period) ?? .today }
 
     /// Only agents that left something on this Mac get cards.
     private var providers: [AgentProvider] {
-        [claude ? AgentProvider.claude : nil, codex ? .codex : nil, opencode ? .opencode : nil].compactMap { $0 }
+        [claude ? AgentProvider.claude : nil, codex ? .codex : nil, opencode ? .opencode : nil,
+         grok ? .grok : nil, kiro ? .kiro : nil, pi ? .pi : nil].compactMap { $0 }
             .filter(usage.snapshot.seen.contains)
+    }
+
+    /// The live card shows every provider while idle and up to two sessions
+    /// while agents are working; its row height follows that content.
+    private var liveRows: Int {
+        let liveCount = usage.snapshot.live.filter { providers.contains($0.provider) }.count
+        return liveCount == 0 ? providers.count : min(2, liveCount)
     }
 
     private var rows: [[NotchAgentTile]] {
@@ -47,11 +58,11 @@ struct NotchAgentsView: View {
             } else {
                 let rows = rows
                 TimelineView(.periodic(from: .now, by: 15)) { context in
-                    if NotchAgentSupport.contentHeight(rows) > size.height + 0.5 {
-                        ScrollView { grid(rows, now: context.date) }
+                    if NotchAgentSupport.contentHeight(rows, liveRows: liveRows) > size.height + 0.5 {
+                        ScrollView { grid(rows, now: context.date, liveRows: liveRows) }
                             .scrollIndicators(.automatic)
                     } else {
-                        grid(rows, now: context.date)
+                        grid(rows, now: context.date, liveRows: liveRows)
                     }
                 }
             }
@@ -61,13 +72,13 @@ struct NotchAgentsView: View {
         .onAppear { usage.pageDidAppear() }
     }
 
-    private func grid(_ rows: [[NotchAgentTile]], now: Date) -> some View {
+    private func grid(_ rows: [[NotchAgentTile]], now: Date, liveRows: Int) -> some View {
         VStack(spacing: NotchAgentSupport.spacing) {
             ForEach(rows, id: \.first?.id) { row in
                 HStack(spacing: NotchAgentSupport.spacing) {
                     ForEach(row) { tile in card(tile, now: now) }
                 }
-                .frame(height: NotchAgentSupport.height(of: row))
+                .frame(height: NotchAgentSupport.height(of: row, liveRows: liveRows))
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
